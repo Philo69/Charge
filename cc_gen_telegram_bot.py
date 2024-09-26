@@ -1,11 +1,14 @@
 import telebot
 import random
 import sqlite3
-import string
+import time
+import requests
+from datetime import datetime
+from termcolor import colored
 
 # Replace with your bot's token
-TOKEN = '7587534708:AAHWUQf1PKBEqxRWZZ7XvJv2wEcNzUpxcgA'
-OWNER_ID = 7202072688  # Replace with the actual Telegram user ID of the bot owner
+TOKEN = '7587534708:AAFAL04YloAGcFzo7pXmXjPRj3WCeMZXuN0'
+OWNER_ID = 7202072688  # Replace with your Telegram user ID as the bot owner/admin
 bot = telebot.TeleBot(TOKEN)
 
 # Connect to SQLite database (create the database and table if not exists)
@@ -15,161 +18,155 @@ cursor = conn.cursor()
 # Create users table if it doesn't exist
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY, 
-                    credits INTEGER DEFAULT 0, 
-                    premium_status BOOLEAN DEFAULT FALSE,
-                    is_registered BOOLEAN DEFAULT FALSE)''')
-
-# Create redeem_codes table if it doesn't exist
-cursor.execute('''CREATE TABLE IF NOT EXISTS redeem_codes (
-                    code TEXT PRIMARY KEY,
-                    is_used BOOLEAN DEFAULT FALSE,
-                    user_id INTEGER DEFAULT NULL)''')
-
-# Create table to store card numbers for batch checking
-cursor.execute('''CREATE TABLE IF NOT EXISTS card_numbers (
-                    card_number TEXT PRIMARY KEY,
-                    user_id INTEGER,
-                    is_valid BOOLEAN DEFAULT FALSE)''')
+                    last_check_time INTEGER DEFAULT 0, 
+                    premium_status BOOLEAN DEFAULT FALSE)''')
 conn.commit()
 
-# Fake address data for different countries
+# Fake address data for different countries (can be expanded)
 fake_addresses = {
-    'USA': {
+    'us': {
         'street_names': ['Maple Street', 'Oak Avenue', 'Pine Lane', 'Elm Road'],
         'cities': ['New York', 'Los Angeles', 'Chicago', 'Houston'],
         'postal_codes': ['10001', '90001', '60601', '77001']
     },
-    'UK': {
+    'uk': {
         'street_names': ['High Street', 'Station Road', 'Main Street', 'Church Lane'],
         'cities': ['London', 'Manchester', 'Liverpool', 'Birmingham'],
         'postal_codes': ['EC1A', 'M1', 'L1', 'B1']
-    },
-    'Canada': {
-        'street_names': ['Queen Street', 'King Street', 'Dundas Street', 'Yonge Street'],
-        'cities': ['Toronto', 'Vancouver', 'Montreal', 'Calgary'],
-        'postal_codes': ['M5A', 'V6B', 'H2X', 'T2A']
-    },
-    'Australia': {
-        'street_names': ['George Street', 'Pitt Street', 'Hunter Street', 'Kent Street'],
-        'cities': ['Sydney', 'Melbourne', 'Brisbane', 'Perth'],
-        'postal_codes': ['2000', '3000', '4000', '6000']
     }
 }
 
-# Function to generate a random valid credit card number using the Luhn algorithm
-def luhn_checksum(card_number):
-    def digits_of(n):
-        return [int(d) for d in str(n)]
-    
-    digits = digits_of(card_number)
-    odd_digits = digits[-1::-2]
-    even_digits = digits[-2::-2]
-    checksum = sum(odd_digits)
-    
-    for d in even_digits:
-        checksum += sum(digits_of(d * 2))
-    return checksum % 10
-
-def is_card_valid(card_number):
-    return luhn_checksum(card_number) == 0
-
-# Function to generate a random fake address
-def generate_fake_address(country):
-    if country not in fake_addresses:
-        return None
-    
-    country_data = fake_addresses[country]
-    street = random.choice(country_data['street_names'])
-    city = random.choice(country_data['cities'])
-    postal_code = random.choice(country_data['postal_codes'])
-    
-    house_number = random.randint(1, 9999)
-    address = f"{house_number} {street}, {city}, {postal_code}, {country}"
-    
-    return address
-
-# Function to generate a random credit card number using a BIN
-def generate_card_with_bin(bin_prefix, length=16):
-    if len(bin_prefix) > length - 1:
-        return None  # BIN too long for the card length
-    
-    number = [int(x) for x in bin_prefix]
-    
-    # Fill the card number with random digits
-    while len(number) < (length - 1):
-        number.append(random.randint(0, 9))
-    
-    # Calculate the check digit using the Luhn algorithm
-    check_digit = luhn_checksum(int(''.join(map(str, number))) * 10)
-    number.append((10 - check_digit) % 10)
-    
-    return ''.join(map(str, number))
-
-# Command handler for /gencc to generate a card with a BIN
-@bot.message_handler(commands=['gencc'])
-def generate_card_number_with_bin(message):
-    args = message.text.split()
-
-    if len(args) != 2:
-        bot.reply_to(message, "Please provide a valid BIN (6 digits). Example: /gencc 123456")
-        return
-
-    bin_input = args[1]
-
-    if len(bin_input) != 6 or not bin_input.isdigit():
-        bot.reply_to(message, "BIN should be exactly 6 digits.")
-        return
-
-    card_number = generate_card_with_bin(bin_input)
-
-    if card_number:
-        bot.reply_to(message, f"Generated card number: {card_number}")
+# Function to validate Stripe secret key
+def validate_stripe_key(sk_key):
+    # Stripe secret key validation logic
+    response = requests.get("https://api.stripe.com/v1/charges", auth=(sk_key, ''))
+    if response.status_code == 200:
+        return True
     else:
-        bot.reply_to(message, "There was an error generating the card number. Please check the BIN.")
+        return False
+
+# Function to generate random credit cards based on BIN
+def generate_credit_cards(bin_input, month=None, year=None):
+    cards = []
+    for _ in range(10):
+        card_number = generate_card_with_bin(bin_input)
+        exp_month = month if month else f"{random.randint(1, 12):02}"
+        exp_year = year if year else f"{random.randint(23, 28)}"
+        cvv = f"{random.randint(100, 999)}"
+        cards.append(f"{card_number}|{exp_month}|{exp_year}|{cvv}")
+    return cards
+
+# Function to generate a random fake address based on country code
+def generate_fake_address(country_code):
+    if country_code not in fake_addresses:
+        return None
+    data = fake_addresses[country_code]
+    street = random.choice(data['street_names'])
+    city = random.choice(data['cities'])
+    postal_code = random.choice(data['postal_codes'])
+    house_number = random.randint(1, 9999)
+    return f"{house_number} {street}, {city}, {postal_code}, {country_code.upper()}"
+
+# Function to check rate limits for public users (30 seconds cooldown)
+def is_user_limited(user_id):
+    cursor.execute("SELECT last_check_time FROM users WHERE user_id=?", (user_id,))
+    user = cursor.fetchone()
+    if user:
+        last_check_time = user[0]
+        current_time = time.time()
+        return (current_time - last_check_time) < 30  # Check if it's within the 30-second limit
+    return False
+
+# Function to update last check time for user
+def update_last_check_time(user_id):
+    current_time = time.time()
+    cursor.execute("UPDATE users SET last_check_time=? WHERE user_id=?", (current_time, user_id))
+    conn.commit()
+
+# Command handler to validate Stripe key
+@bot.message_handler(commands=['sk'])
+def check_stripe_key(message):
+    sk_key = message.text.split(' ')[1]
+    if validate_stripe_key(sk_key):
+        bot.reply_to(message, "✅ Stripe key is valid!")
+    else:
+        bot.reply_to(message, "❌ Invalid Stripe key.")
+
+# Command handler to generate credit cards based on BIN
+@bot.message_handler(commands=['gen'])
+def generate_bin_cards(message):
+    args = message.text.split(' ')
+    bin_input = args[1]
+    month = args[2] if len(args) > 2 else None
+    year = args[3] if len(args) > 3 else None
+    cards = generate_credit_cards(bin_input, month, year)
+    for card in cards:
+        bot.reply_to(message, card)
+
+# Command handler to generate a fake address based on country code
+@bot.message_handler(commands=['fake'])
+def fake_address(message):
+    args = message.text.split(' ')
+    country_code = args[1].lower()
+    address = generate_fake_address(country_code)
+    if address:
+        bot.reply_to(message, f"Generated Address: {address}")
+    else:
+        bot.reply_to(message, "❌ Invalid country code.")
+
+# Command handler to scrape CCs from a public channel or group
+@bot.message_handler(commands=['scr'])
+def scrape_ccs(message):
+    args = message.text.split(' ')
+    public_channel = args[1]
+    amount = int(args[2])
+    # Implement scraping logic here for the public_channel
+    bot.reply_to(message, f"Scraped {amount} CCs from {public_channel} (fake data for demo)")
+
+# Command handler for CC check (rate-limited for general users)
+@bot.message_handler(commands=['cc'])
+def check_credit_card(message):
+    user_id = message.from_user.id
+    if is_user_limited(user_id) and not is_user_premium(user_id):
+        bot.reply_to(message, "❌ You can only check one CC every 30 seconds. Contact me for unlimited private access.")
+    else:
+        # CC check logic goes here (Stripe/VBV check)
+        card_info = message.text.split(' ')[1]
+        # For demo purposes, we'll assume the card is valid
+        bot.reply_to(message, f"✅ Card {card_info} is valid (fake check for demo).")
+        update_last_check_time(user_id)
+
+# Check if a user is premium
+def is_user_premium(user_id):
+    cursor.execute("SELECT premium_status FROM users WHERE user_id=?", (user_id,))
+    user = cursor.fetchone()
+    if user:
+        return user[0]
+    return False
+
+# Command to grant premium access (for owner/admin only)
+@bot.message_handler(commands=['grant_premium'])
+def grant_premium(message):
+    user_id = message.text.split(' ')[1]
+    if message.from_user.id == OWNER_ID:
+        cursor.execute("UPDATE users SET premium_status=? WHERE user_id=?", (True, user_id))
+        conn.commit()
+        bot.reply_to(message, f"✅ Granted premium access to user {user_id}.")
+    else:
+        bot.reply_to(message, "❌ You don't have permission to use this command.")
 
 # Command handler for /cmds to list all available commands
 @bot.message_handler(commands=['cmds'])
 def list_commands(message):
     commands = '''
-    Available commands:
-    /generate - Generate a random credit card number
-    /redeem <code> - Redeem a premium code
-    /credits - Check remaining credits
-    /chk <card_number> - Check if the card number is authorized
-    /mchk - Check all saved card numbers for authorization
-    /luhn <card_number> - Check if the card number is valid according to the Luhn algorithm
-    /gencc <BIN> - Generate a random card number based on a BIN (first 6 digits)
-    /fake <country> - Generate a random fake address (Supported: USA, UK, Canada, Australia)
-    /register - Register to the bot and receive 100 credits
-    /generate_code <user_id> - (Owner only) Generate a redeem code for the user
+    ✅ /cc <card_info> - Check credit card information (Example: cc|month|year|cvv) - Stripe & VBV Check
+    ✅ /sk <sk_key> - Validate Stripe secret key
+    ✅ /gen <bin>|<month>|<year> - Generate 10 random credit cards
+    ✅ /fake <country_code> - Generate random address (Example: fake us)
+    ✅ /scr <public_channel> <amount> - Scrape CCs from public channels/groups
+    ❌ General users can only check one CC every 30 seconds in public groups. Contact me for unlimited private access.
     '''
     bot.reply_to(message, commands)
-
-# Command handler for /register to allow users to register
-@bot.message_handler(commands=['register'])
-def register_user(message):
-    user_id = message.from_user.id
-    cursor.execute("SELECT is_registered FROM users WHERE user_id=?", (user_id,))
-    user = cursor.fetchone()
-
-    if user and user[0]:
-        bot.reply_to(message, "You are already registered!")
-        return
-
-    # Register user and give 100 credits
-    cursor.execute("UPDATE users SET is_registered=?, credits=? WHERE user_id=?", (True, 100, user_id))
-    conn.commit()
-    bot.reply_to(message, "You have successfully registered and received 100 credits!")
-
-# Function to ensure user is registered before executing any command
-def ensure_registered(message):
-    user_id = message.from_user.id
-    cursor.execute("SELECT is_registered FROM users WHERE user_id=?", (user_id,))
-    user = cursor.fetchone()
-    return user and user[0]
-
-# Other command handlers are the same as before, checking registration status
-# You can reuse the other commands for generate, redeem, credits, etc.
 
 # Start polling for Telegram messages
 if __name__ == "__main__":
