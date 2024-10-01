@@ -1,6 +1,7 @@
 import re
 import logging
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 # Set up logging to track errors or debug
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -41,31 +42,29 @@ def process_cards(card_data):
     return "\n".join(results)
 
 # Define the /start command to greet the user
-def start(update, context):
-    update.message.reply_text("Welcome to the Credit Card Checker Bot! Please send card details in the format card_number|expiry_month|expiry_year|cvv")
+async def start(update: Update, context):
+    await update.message.reply_text("Welcome to the Credit Card Checker Bot! Please send card details in the format card_number|expiry_month|expiry_year|cvv")
 
 # Define the function that handles incoming messages (card numbers)
-def handle_message(update, context):
+async def handle_message(update: Update, context):
     user_message = update.message.text
     try:
         # Process the card data using the process_cards function
         result = process_cards(user_message)
-        update.message.reply_text(result)  # Send the validation result back to the user
+        await update.message.reply_text(result)  # Send the validation result back to the user
     except Exception as e:
-        update.message.reply_text(f"Error processing cards: {str(e)}")
+        await update.message.reply_text(f"Error processing cards: {str(e)}")
 
 def main():
-    # Set up the Updater with your bot's token
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    # Set up the Application with your bot's token
+    application = Application.builder().token(TOKEN).build()
 
     # Define command and message handlers
-    dp.add_handler(CommandHandler("start", start))  # Respond to /start command
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))  # Handle text messages (card data)
+    application.add_handler(CommandHandler("start", start))  # Respond to /start command
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))  # Handle text messages (card data)
 
     # Start polling to listen for messages
-    updater.start_polling()
-    updater.idle()  # Run the bot until interrupted
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
